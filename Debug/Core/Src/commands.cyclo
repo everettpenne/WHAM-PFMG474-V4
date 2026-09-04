@@ -1,0 +1,2 @@
+../Core/Src/commands.c:23:6:cmd_idn	1
+../Core/Src/commands.c:37:6:cmd_boot	1

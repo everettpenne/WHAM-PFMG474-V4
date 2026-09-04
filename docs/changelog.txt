@@ -1,0 +1,137 @@
+WHAM-PFMG474-V4 Firmware Changelog
+===================================
+
+2026-08-31  —  Documentation: AGENTS.md + docs/
+-------------------------------------------------
+  Change:  First documentation pass for this project. Added AGENTS.md
+        (orientation file, mirroring the sibling PFM-STM32G474 project's
+        convention), docs/command_reference.md, docs/serial_reflash_guide.md,
+        and this changelog. Everything below this entry documents work
+        that happened before the docs existed to record it as it went;
+        dated to when it actually happened, reconstructed from the
+        session it was done in.
+
+2026-08-31  —  Bugfix: ROM bootloader Go-jump left interrupts dead
+---------------------------------------------------------------------
+  Change:  Found and fixed on real hardware while first testing
+        wham_serial_flash.py end-to-end. Root cause, symptom, and fix
+        are documented in full in boot_jump.c's BootJump_CheckAndEnter()
+        and in docs/serial_reflash_guide.md Section 4 -- summary:
+
+        Symptom: a serial reflash reported success (write + verify both
+        passed via stm32flash), but the newly-flashed firmware was
+        completely unresponsive over USART2 afterward -- *IDN? got no
+        reply -- until the board was power-cycled, at which point it
+        worked immediately and correctly.
+
+        Root cause: stm32flash's -g (the ROM bootloader's "Go" command)
+        branches to the new app without performing a real chip reset.
+        SCB->VTOR and SYSCFG->MEMRMP, left pointing at the ROM
+        bootloader's own vector table from the *previous* boot's jump
+        INTO the bootloader (the normal BOOT-command flow), are never
+        corrected by anything in this firmware -- system_stm32g4xx.c's
+        SystemInit() only sets VTOR under USER_VECT_TAB_ADDRESS, which
+        is not defined here (the CubeMX default). Every interrupt,
+        including the USART2 RX interrupt the whole command parser
+        depends on, vectored into the ROM bootloader's table instead of
+        the app's own.
+
+        Fix: BootJump_CheckAndEnter()'s normal-boot path now
+        unconditionally restores SCB->VTOR = FLASH_BASE and the main-
+        Flash SYSCFG remap before falling through to HAL_Init(). No-op
+        on a true reset (both already correct there); the actual fix on
+        the Go-jump path.
+
+        Verified: flashed a new firmware version over serial, queried
+        *IDN? immediately with no manual reset, got the new version back
+        correctly -- confirmed twice in a row (v0.5, then v0.6).
+
+        Not yet ported to the sibling PFM-STM32G474/-V4 projects, which
+        carry the same unfixed boot_jump.c this one was forked from --
+        deliberately deferred per project decision, not forgotten.
+
+2026-08-31  —  Serial-bootloader entry (BOOT command)
+---------------------------------------------------------
+  Change:  Ported boot_jump.c/boot_jump.h from the sibling PFM-STM32G474
+        project -- software jump into the STM32 ROM bootloader over
+        USART2, no physical BOOT0/NRST access needed. Two additions
+        beyond a straight port:
+
+          - Made removable by design: BOOT_JUMP_FEATURE_ENABLED
+            (boot_jump.h) is the single point of control. Verified both
+            configurations compile and link clean (the enabled build has
+            the full mechanism; the disabled build's cmd_boot() and
+            BOOT table row disappear entirely, confirmed via `nm`, and
+            BootJump_RequestBootloader()/CheckAndEnter() reduce to empty
+            no-op functions).
+          - (See the dedicated bugfix entry above, added the same day
+            once real-hardware testing surfaced the Go-jump issue.)
+
+        cmd_boot() added to commands.c/commands.h, BOOT registered in
+        cmd_parser.c's command_table[]. main.c calls
+        BootJump_CheckAndEnter() as the literal first statement in
+        main(), before HAL_Init() -- unconditional regardless of the
+        feature flag, so main.c never needs its own #if.
+
+2026-08-31  —  Ported wham_serial_flash.py
+-----------------------------------------------
+  Change:  Ported from the sibling project's pfm_serial_flash.py, in
+        python/ (an existing host-tooling directory, not a new one --
+        consolidated rather than fragmenting script locations).
+        Corrected for this project's actual build artifact name
+        (WHAM-PFMG474-V4.bin, from .cproject's artifactName=${ProjName})
+        and baud rate (9600, matching main.c and scpi.py -- V3/V4's
+        script uses 9600 too; this project's USART2 was briefly
+        configured for 115200 during initial bring-up before being
+        corrected to 9600 for project-wide consistency).
+
+2026-08-31  —  SCPI-style hierarchical command dispatch
+-------------------------------------------------------------
+  Change:  Replaced cmd_parser.c's flat case-sensitive exact-match table
+        with SCPI-style matching (scpi_match()/scpi_token_match()):
+        colon-separated hierarchy levels, per-level short/long form
+        (mandatory-uppercase-prefix + optional-lowercase-suffix),
+        case-insensitive, exact query-suffix (?) matching, tolerant of
+        a leading colon on input. Table stays flat (one row per leaf
+        command, full mnemonic path as the pattern) -- no separate tree
+        structure to build or maintain.
+
+        Verified with a standalone native (non-cross-compiled) test
+        harness before wiring in: 19 cases covering short/long form,
+        mixed-form, wrong depth, wrong query suffix, case variants, and
+        leading-colon tolerance, all passing. Also confirmed strtok_r/
+        strncasecmp/isupper actually link under this toolchain's
+        --specs=nano.specs (not guaranteed in every newlib-nano config).
+
+        *IDN was renamed to *IDN? to match real IEEE 488.2/SCPI form,
+        now that the trailing ? is meaningfully enforced.
+
+2026-08-31  —  *IDN command + version.h
+---------------------------------------------
+  Change:  Added cmd_idn() (commands.c/commands.h) and a new version.h
+        holding HW_BOARD_NAME, HW_BOARD_REV (placeholder -- update to
+        match actual PCB silkscreen), and FW_VERSION_STRING as separate,
+        easy-to-bump constants, kept out of commands.c itself.
+
+2026-08-31  —  Ported serial command architecture
+--------------------------------------------------------
+  Change:  Ported uart.c/uart.h (interrupt-driven single-byte USART2
+        receive, line-buffer accumulation, blocking transmit) and
+        cmd_parser.c/cmd_parser.h (tokenize + dispatch) from the sibling
+        PFM-STM32G474 project -- architecture only, no command handlers.
+        commands.c/commands.h added as empty placeholders carrying the
+        OK/ERR response convention forward.
+
+        Wired into main.c (uart_init()/uart_process() in the USER CODE
+        blocks) and stm32g4xx_it.c (USART2_IRQHandler()/
+        HAL_UART_RxCpltCallback(), which didn't exist in this fresh
+        project yet, plus the local `extern huart2` matching the sibling
+        project's convention). The USART2 NVIC priority/enable call
+        (HAL_NVIC_SetPriority/EnableIRQ) was added inside
+        MX_USART2_UART_Init()'s own USER CODE block -- easy to miss,
+        load-bearing: without it, HAL_UART_Receive_IT() arms but the
+        interrupt never reaches the NVIC.
+
+        Verified by compiling and linking the whole project standalone
+        with arm-none-eabi-gcc against this project's own Drivers/ and
+        linker script (no Debug/ build existed yet at this point).
