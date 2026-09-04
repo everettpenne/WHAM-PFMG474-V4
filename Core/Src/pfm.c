@@ -14,12 +14,14 @@ static uint16_t g_pfmIndex = 0U;
 static uint16_t g_holdCounter = 0U;
 
 /* Number of ENTRIES ACTUALLY BUILT in g_pfmTable[], as opposed to
-   PFM_TABLE_SIZE (the fixed buffer capacity). With no table builder
-   ported (see pfm.h), this starts at 0 and stays 0 -- nothing in this
-   file ever increments it. PFM_CycleBoundaryHandler() must check
-   g_pfmIndex against THIS, not PFM_TABLE_SIZE -- a short table would
-   otherwise never trigger exhaustion, since the index would have to
-   climb all the way to PFM_TABLE_SIZE first. */
+   PFM_TABLE_SIZE (the fixed buffer capacity). Written only by
+   PFM_TableReset() (resets to 0) and PFM_AppendStep() (increments on
+   each successful append) -- see those functions, and commands.c's
+   TABle:* handlers, which are the only caller today.
+   PFM_CycleBoundaryHandler() must check g_pfmIndex against THIS, not
+   PFM_TABLE_SIZE -- a short table would otherwise never trigger
+   exhaustion, since the index would have to climb all the way to
+   PFM_TABLE_SIZE first. */
 static uint16_t g_pfmEntryCount = 0U;
 
 static PFM_State_t g_pfmState = PFM_STATE_RUNNING;
@@ -234,4 +236,30 @@ const PFM_Step_t *PFM_GetStepByIndex(uint16_t index)
     }
 
     return &g_pfmTable[index];
+}
+
+void PFM_TableReset(void)
+{
+    g_pfmEntryCount = 0U;
+}
+
+uint8_t PFM_AppendStep(uint16_t per, uint16_t cmpA, uint16_t cmpB, uint16_t cmpC)
+{
+    if (g_pfmEntryCount >= PFM_TABLE_SIZE)
+    {
+        return 0U;
+    }
+
+    g_pfmTable[g_pfmEntryCount].per  = per;
+    g_pfmTable[g_pfmEntryCount].cmpA = cmpA;
+    g_pfmTable[g_pfmEntryCount].cmpB = cmpB;
+    g_pfmTable[g_pfmEntryCount].cmpC = cmpC;
+    g_pfmEntryCount++;
+
+    return 1U;
+}
+
+uint16_t PFM_GetEntryCount(void)
+{
+    return g_pfmEntryCount;
 }

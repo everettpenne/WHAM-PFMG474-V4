@@ -4,8 +4,9 @@ How to re-flash the controller over its USART2 serial link using the
 open-source `stm32flash`, with **no** STM32CubeIDE, ST-Link, or physical
 BOOT0/NRST access involved in the flashing step itself. Ported from the
 sibling PFM-STM32G474 project's guide, adjusted for this project's baud
-(9600) and build artifact name (`WHAM-PFMG474-V4.bin`), and with a real
-bugfix history specific to this project (see "The Go-jump bug" below).
+(115200, raised from 9600 on 2026-09-04 — see `docs/changelog.txt`) and
+build artifact name (`WHAM-PFMG474-V4.bin`), and with a real bugfix
+history specific to this project (see "The Go-jump bug" below).
 
 **Verified working end-to-end on real hardware** (2026-08-31): flash a
 new firmware version, query `*IDN?` immediately afterward with no manual
@@ -21,7 +22,7 @@ pip install pyserial           # used by wham_serial_flash.py
 - `stm32flash` implements ST's AN3155 USART bootloader protocol.
 - The ROM bootloader always uses **8E1** (even parity) at an auto-bauded
   rate (57600 by default here); `stm32flash` handles this — you don't
-  configure it, and it's independent of the *application's* 9600 8N1.
+  configure it, and it's independent of the *application's* 115200 8N1.
 - USART2 wiring: adapter **TX → PA3** (USART2_RX), adapter **RX → PA2**
   (USART2_TX), **GND ↔ GND**.
 
@@ -40,7 +41,7 @@ node, so the script sees 2 candidates and refuses to guess rather than
 risk the wrong one. Pass `--port` explicitly. Prefer the `cu.*` node.)
 
 That will:
-1. Send `BOOT` at 9600 8N1; the app replies `OK ENTERING BOOTLOADER` and
+1. Send `BOOT` at 115200 8N1; the app replies `OK ENTERING BOOTLOADER` and
    resets into the ROM bootloader.
 2. Run `stm32flash` to write + verify `Debug/WHAM-PFMG474-V4.bin`.
 3. Issue a Go so the new firmware starts immediately (no reset pin

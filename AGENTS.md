@@ -22,10 +22,16 @@ ported over is called out explicitly below and in each file's own
 comments -- check there before assuming a mechanism is unique to this
 project or before "fixing" something that was a deliberate port.
 
-## Current functionality (as of 2026-08-31)
+## Current functionality (as of 2026-09-04)
 
-Everything today is serial-command infrastructure. No PWM, no HRTIM,
-no application-specific logic yet.
+3-phase PWM generation (HRTIM1, Timers A/B/C active, D/E/F reserved)
+plus the serial command layer. A PFM table can be uploaded, its length
+confirmed, and (as of 2026-09-04) fired: `FIRE` starts playback from
+step 0 via the HRTIM master-repetition interrupt, and it auto-stops
+when the table is exhausted. There is still **no state
+machine** -- no ARM precondition, no interlock, no fault gating; `FIRE`
+takes effect immediately whenever sent, per current project decision
+(see `docs/command_reference.md`'s `FIRE` entry).
 
 - **Serial command architecture** (`uart.c`, `cmd_parser.c`) -- ported
   from the sibling project, ported *architecture-only* (no command
@@ -73,6 +79,28 @@ no application-specific logic yet.
   - `scpi.py` -- an interactive serial terminal (not written by an
     agent; predates this documentation pass). Useful for manual
     poking at the command set.
+  - `pfm_table_upload.py` -- builds one of 5 fixed PFM shot profiles
+    (see below) and uploads it via `TABLE:*`.
+- **PWM/HRTIM engine** (`hrtim.c`, `pfm.c`) -- ported from the sibling
+  project and wired into `main.c` (see `docs/changelog.txt`, 2026-09-04
+  entries, for the full CubeMX-vs-hand-code saga this took to get
+  right -- read that before touching `hrtim.c`'s `HAL_HRTIM_MspInit()`
+  or the `.ioc`). Timers A/B/C are the sibling project's exact 3-phase
+  setup (120°/240° Master-synced, 100 ns dead time); D/E/F are
+  initialized identically but NOT phase-locked to Master (only 4
+  Master compare units exist -- enough for 5 synced phases, not 6) and
+  NOT started by `HRTIM1_PWM_Start()`, which still only takes U/V/W.
+  `PWM_NUM_CHANNELS` in `version.h` documents this, it doesn't control it.
+- **`TABLE:BEGIN`/`STEP`/`END`/`?`** (`commands.c`, primitives in
+  `pfm.c`) -- uploads a complete PFM table (`PFM_Step_t` entries) built
+  entirely off-controller. Firmware does zero construction/validation
+  beyond "does it fit" -- see `pfm.h`'s "ADDED" header note.
+  `python/pfm_table_upload.py` is the reference builder: 5 fixed
+  profiles today (constant 50% duty; 25%->75% ramp; 90%->10% ramp;
+  10%->90% ramp; 90%->25% ramp), selected by editing a constant before
+  running.
+  `FIRE` plays an uploaded table back -- see "Current functionality"
+  above.
 
 ## Tech stack & layout
 
@@ -80,9 +108,9 @@ no application-specific logic yet.
 - Built with STM32CubeIDE's generated makefile; toolchain
   arm-none-eabi-gcc 13.3.
 - `Core/Src|Inc/` -- all project code. Currently: `main.c`, `uart.c`,
-  `cmd_parser.c`, `commands.c`, `boot_jump.c`, plus CubeMX-generated
-  `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/`system_stm32g4xx.c`/
-  `syscalls.c`/`sysmem.c`.
+  `cmd_parser.c`, `commands.c`, `boot_jump.c`, `hrtim.c`, `pfm.c`, plus
+  CubeMX-generated `stm32g4xx_hal_msp.c`/`stm32g4xx_it.c`/
+  `system_stm32g4xx.c`/`syscalls.c`/`sysmem.c`.
 - `python/` -- host-side tooling (see above).
 - `docs/` -- this documentation set.
 
@@ -117,9 +145,10 @@ building from the command line without going through the IDE first.
   warnings) + real hardware round trips over the serial link (see
   `docs/changelog.txt` for what's actually been confirmed on hardware
   vs. only compiled/linked).
-- Serial console: **9600 8N1**, SCPI-style mnemonics (case-insensitive,
-  short/long form), `OK ...` / `ERR <code> <msg>` responses. Full
-  protocol: `docs/command_reference.md`.
+- Serial console: **115200 8N1** (raised from 9600 on 2026-09-04, see
+  "Hard-won invariants" below and `docs/changelog.txt`), SCPI-style
+  mnemonics (case-insensitive, short/long form), `OK ...` /
+  `ERR <code> <msg>` responses. Full protocol: `docs/command_reference.md`.
 
 ## Coding conventions
 
@@ -132,13 +161,33 @@ for the current standard to match.
 
 ## Hard-won invariants
 
-1. **Baud rate is 9600 everywhere on purpose** -- `main.c`'s
-   `huart2.Init.BaudRate = 9600` line lives in CubeMX-generated code
-   *outside* any `USER CODE` marker. A `.ioc` "Generate Code" (the
-   `.ioc` itself has no explicit baud parameter, since 9600 isn't
-   CubeMX's HAL default) will silently reset it back to 115200 --
-   re-apply 9600 if that ever happens. Same situation in the sibling
-   project's `main.c`.
+1. **Baud rate is 115200 everywhere on purpose** (raised from 9600 on
+   2026-09-04, real-hardware experiment -- see `docs/changelog.txt`;
+   `python/wham_serial_flash.py`, `python/pfm_table_upload.py`, and
+   `python/scpi.py` were all updated to match). `main.c`'s
+   `huart2.Init.BaudRate = 115200` line lives in CubeMX-generated code
+   *outside* any `USER CODE` marker. A `.ioc` "Generate Code" would
+   reset it back to HAL's own default -- which, as it happens, IS
+   115200 right now, so a regen wouldn't silently break this today.
+   That's a coincidence, not a guarantee: if this value ever needs to
+   change again, re-apply it explicitly rather than trusting a regen to
+   land on the right number by chance. This is a WHAM-PFMG474-V4-only
+   divergence -- the sibling PFM-STM32G474 project still uses 9600, and
+   nothing here implies porting this change there.
+   - **921600 does not work on this hardware** -- tried directly after
+     115200 (skipping the standard steps in between) as part of the
+     same experiment: consistently garbled, same-length-but-wrong-content
+     replies (a real baud mismatch/reliability failure, not a fluke --
+     retried 3x). Left unexplored which of 230400/460800 is the actual
+     practical ceiling; 115200 was chosen as "clearly safe and already a
+     large win," not as "the fastest verified-working rate."
+   - **If a bad baud change ever strands the board** (as 921600 did,
+     mid-experiment): the serial `BOOT` command needs a working link to
+     even request the ROM bootloader, so it can't recover a board stuck
+     at a wrong baud. An ST-Link + `st-flash write <bin> 0x08000000`
+     (or `st-info --probe` first to confirm it's detected) recovers
+     over SWD, completely bypassing the broken serial link -- confirmed
+     working for exactly this scenario the same day.
 2. **`BootJump_CheckAndEnter()` must stay the literal first statement in
    `main()`**, before `HAL_Init()`. This is what lets the ROM bootloader
    jump-in path (entering, not the `Go` command discussed above) work
@@ -156,25 +205,69 @@ for the current standard to match.
   sibling V3/V4 projects yet**, which carry the identical unfixed
   `boot_jump.c` this one was forked from. Deliberately deferred, not
   forgotten -- ask before assuming it should happen automatically.
-- **PWM/HRTIM engine is ported (`hrtim.c`/`pfm.c`) but not wired into
-  `main.c` or any command yet** -- see `docs/test_protocol.md`'s T3 for
-  the developer-only way to exercise it today, and the known
-  `PFM_Restart()`-applies-an-empty-table trap documented there (fix
-  before wiring this into a real command, not after).
-- **`HRTIM1` is not yet represented in the `.ioc`** -- `hrtim.c` fully
-  self-configures the peripheral (including GPIO AF pin muxing, in its
-  own `HAL_HRTIM_MspInit()`) without any CubeMX-generated code, so the
-  firmware works regardless -- but CubeMX's Pinout view doesn't know
-  PA8-11/PB12-13 are spoken for, and `HAL_HRTIM_MODULE_ENABLED`
-  (`stm32g4xx_hal_conf.h`) is a hand-added line outside the `.ioc`'s
-  own awareness (same regen-hazard category as the baud rate, above).
-  In progress: configuring HRTIM1 properly through CubeMX's Pinout &
-  Configuration tool for channels A/B/C (matching V3) plus D/E/F
-  (reserved, unused) to close this gap -- see the backed-up
-  `hrtim.c`/`hrtim.h`/`.ioc` this was based on before any GUI changes,
-  since CubeMX regenerating this file from its own template would
-  discard the hand-written implementation entirely (no `USER CODE`
-  markers for it to preserve).
+- **RESOLVED 2026-09-04: `FIRE` now exists.** `HRTIM1_EnableMasterInterrupt()`
+  (`hrtim.c`) and `HRTIM1_Master_IRQHandler()` (`stm32g4xx_it.c`) were
+  ported from the sibling project (state-machine/fault-pin calls
+  stripped, since neither exists here), enabled once at boot from
+  `main.c` (after `FixSysTickPriority()`, also newly ported, has raised
+  SysTick off the HAL default -- see that function's own doc comment
+  for the priority scheme: SysTick=0, HRTIM1_Master=1, USART2=2).
+  `cmd_fire()` (`commands.c`) wraps `PFM_Restart()`, rejecting with
+  `ERR 5` against an empty table. No ARM/state-machine interlock was
+  added -- `FIRE` always takes effect immediately; adding an interlock
+  is future work, not implied by this change. See
+  `docs/test_protocol.md`'s T3 for the (now largely superseded, but
+  still useful for `hrtim.c`-only bring-up) developer-only direct-call
+  path this bypassed. **Verified end-to-end on real hardware the same
+  day** (flash -> upload a real 500-entry table -> `FIRE` -> `OK`) --
+  command-layer round trip only, no scope available in that pass, so
+  the actual waveform (T4.5-T4.8) is still unobserved. That same pass
+  also caught and fixed an unrelated ~25-50x slowdown in
+  `pfm_table_upload.py`'s own reply-reading loop -- see
+  `docs/changelog.txt`, not a firmware issue.
+- **RESOLVED 2026-09-04: cold-start phase-lock glitch on every `FIRE`,
+  fully confirmed on real hardware.** The waveform T4.5-T4.8 left
+  unobserved above WAS observed, via DSLogic captures -- and went
+  through three iterations before it was actually right (full story in
+  `docs/changelog.txt`'s several 2026-09-04 entries; this is the final
+  state only). Root cause: `HRTIM1_PWM_Start()`'s force-ACTIVE step
+  (needed to avoid an undefined complementary-pair state, per ST's own
+  guidance) puts U/V/W's main outputs HIGH at the same instant with no
+  regard for their intended 120°/240° stagger, and Timers B/C
+  (`ResetTrigger = MASTER_CMP1`/`MASTER_CMP2`) don't become genuinely
+  phase-locked until they've received that first reset -- which, unlike
+  Timer A's (`MASTER_PER`, coincides with its own natural rollover), an
+  external reset does NOT itself regenerate the output's SET state.
+  Fixed in `HRTIM1_PWM_Start()`: each phase now waits for and connects
+  to its own pins SEPARATELY, at its own reset-trigger event (V at
+  `MASTER_CMP1`, W at `MASTER_CMP2`, U at `MASTER_PER`/`MREP`, via the
+  new static helper `HRTIM1_WaitForPhaseAndConnect()`), with V/W's
+  output re-forced ACTIVE at that exact moment (a direct `SETx1R`/
+  `RSTx2R` write, same reasoning as the direct `OENR` write) so their
+  first visible pulse is a genuine fresh start, not a snapshot of
+  whatever their comparator had been doing since an earlier, still-
+  hidden reset. Global interrupts are masked for the whole sequence
+  (`HRTIM_MASTER_IT_MREP`/`MCMP1`/`MCMP2`, all armed at boot by
+  `HRTIM1_EnableMasterInterrupt()`, would otherwise fire mid-sequence
+  and let `PFM_CycleBoundaryHandler()` silently advance the table
+  before step 0 was ever visible) -- bounded by a spin-count ceiling,
+  not `HAL_GetTick()`, since that can't advance while masked.
+
+  **Confirmed on real hardware**: a ~5 ms DSLogic capture spanning 499
+  of profile 3's 500 periods shows phase spacing holding at
+  ~3300 ns/~6600-6700 ns (target 3333/6667 ns) consistently from the
+  cold-start edge through the last period, and U's duty tracking the
+  90% -> 10% ramp cleanly throughout, landing exactly on 10.0% at the
+  final period -- the fix holds for the entire shot, not just the
+  startup instant.
+- **`HRTIM1` *is* represented in the `.ioc` now** (as of 2026-09-04,
+  hand-constructed, not GUI-generated -- see `docs/changelog.txt`).
+  Do NOT reopen HRTIM1's Mode/Configuration panel in CubeIDE's Pinout &
+  Configuration GUI -- doing so once already triggered a full
+  regeneration that silently rewrote the clock tree and produced
+  duplicate-symbol link errors against `hrtim.c`'s hand-written
+  `HAL_HRTIM_MspInit()`/`hhrtim1`. Other peripherals' pinout remains
+  safe to configure through the GUI normally.
 - **`_Min_Stack_Size` in `STM32G474QETX_FLASH.ld` is still the CubeMX
   nominal minimum (0x400 = 1 KB)**, not a value chosen for this
   firmware's actual worst-case call depth. Deliberately not changed

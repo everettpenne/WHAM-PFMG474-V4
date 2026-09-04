@@ -21,20 +21,26 @@ extern "C" {
  *             PFM_GetCurrentStep(), PFM_SetPhaseEnabled()/
  *             PFM_GetPhaseEnabled(), PFM_Phase120()/PFM_Phase240()).
  *
- *   NOT PORTED: anything that BUILDS a table -- the sibling project's
- *             SWEEP segment/track builder (PFM_BuildTable(),
- *             PFM_FreqInit/Seg, PFM_DutyInit_x/Seg_x, the interpolation
- *             math, TBL_BEGIN/DATA/END raw upload), and everything
- *             FEEDBACK-mode related. This means: as ported, the table
- *             starts and stays EMPTY (g_pfmEntryCount == 0) -- nothing
- *             in this pass populates it. PFM_CycleBoundaryHandler()'s
- *             own defensive check for that case stops the shot
- *             immediately (see pfm.c) rather than running on
- *             uninitialized entries, so this is a safe, inert default,
- *             not a silent hazard -- but a FIRE with no table builder
- *             wired up yet will do nothing. Populating the table (even
- *             minimally, e.g. a single fixed-frequency entry) is
- *             deliberately left as a separate future step.
+ *   NOT PORTED: the sibling project's SWEEP segment/track builder
+ *             (PFM_BuildTable(), PFM_FreqInit/Seg, PFM_DutyInit_x/
+ *             Seg_x, the interpolation math) and everything
+ *             FEEDBACK-mode related. No on-controller construction
+ *             logic exists, and none is planned -- see below.
+ *
+ *   ADDED (2026-09-04), NOT a port: PFM_TableReset()/PFM_AppendStep()/
+ *             PFM_GetEntryCount() -- minimal, generic primitives so a
+ *             serial command layer (commands.c's TABle:* commands) can
+ *             write a complete table built entirely off-controller, by
+ *             a host-side Python script (python/pfm_table_upload.py).
+ *             Per project decision: table CONSTRUCTION lives on the
+ *             host, not the firmware -- these three functions do no
+ *             validation of what a step "means" (no frequency/duty
+ *             math, no bounds tied to a supply type, none of that
+ *             exists here), only bounds-checking that the table itself
+ *             isn't overrun. commands.c's cmd_table_step() owns
+ *             whatever validation is appropriate at the protocol
+ *             layer. If a real on-controller builder is ever added
+ *             later, it would use this exact same API.
  *
  * Also not ported: PFM_SetStartupFreq()/Duty()/PulseLength() and their
  * g_startup* state -- those exist in the sibling project purely to feed
@@ -113,6 +119,36 @@ uint8_t PFM_GetPhaseEnabled(PFM_Phase_t phase);
 
 const PFM_Step_t *PFM_GetCurrentStep(void);
 const PFM_Step_t *PFM_GetStepByIndex(uint16_t index);
+
+/* --------------------------------------------------------------------------
+ * Table upload primitives -- see the ADDED note in this file's header
+ * comment. Generic on purpose: no notion of "upload session" state
+ * (whether a TABLE:BEGIN was sent) lives here -- that's commands.c's
+ * job, matching how the rest of this codebase keeps protocol-layer
+ * state (e.g. cmd_boot()'s checks) out of the modules it calls into.
+ * -------------------------------------------------------------------------- */
+
+/* Empties the table (g_pfmEntryCount = 0) without touching HRTIM or
+ * PFM_GetState() -- purely a data-structure reset, safe to call at any
+ * time. Does NOT reset g_pfmIndex/g_holdCounter (PFM_ResetIndices()
+ * already does that, separately, for the fault-clear/quiescent case;
+ * this function is deliberately narrower). */
+void PFM_TableReset(void);
+
+/* Appends one entry at g_pfmTable[g_pfmEntryCount], then increments
+ * g_pfmEntryCount. Returns 1 on success, 0 if the table is already at
+ * PFM_TABLE_SIZE capacity (entry NOT written in that case -- the
+ * caller's count of "how many actually got in" should stop advancing
+ * on a 0 return, not silently keep calling). No range-checking on the
+ * values themselves (per/cmpA/cmpB/cmpC accepted as given -- the
+ * eventual apply-time HRTIM1_ClampCompare() in hrtim.c is the last
+ * line of defense there, but callers should validate before this, not
+ * rely on that clamp as anything other than a backstop). */
+uint8_t PFM_AppendStep(uint16_t per, uint16_t cmpA, uint16_t cmpB, uint16_t cmpC);
+
+/* Current g_pfmEntryCount -- how many entries PFM_AppendStep() has
+ * actually written since the last PFM_TableReset(). */
+uint16_t PFM_GetEntryCount(void);
 
 #ifdef __cplusplus
 }

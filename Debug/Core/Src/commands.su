@@ -1,2 +1,8 @@
-../Core/Src/commands.c:23:6:cmd_idn	88	static
-../Core/Src/commands.c:37:6:cmd_boot	16	static
+../Core/Src/commands.c:22:13:SendErr	160	static
+../Core/Src/commands.c:33:6:cmd_idn	88	static
+../Core/Src/commands.c:47:6:cmd_boot	16	static
+../Core/Src/commands.c:87:6:cmd_table_begin	16	static
+../Core/Src/commands.c:97:6:cmd_table_step	48	static
+../Core/Src/commands.c:153:6:cmd_table_end	64	static
+../Core/Src/commands.c:164:6:cmd_table_query	64	static
+../Core/Src/commands.c:194:6:cmd_fire	16	static

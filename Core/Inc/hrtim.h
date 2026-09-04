@@ -14,10 +14,15 @@ extern "C" {
  * hrtim.c
  *
  * Ported from the sibling PFM-STM32G474 project's hrtim.c -- 3-phase
- * (Timers A/B/C) complementary PWM generation on HRTIM1, hardcoded to
- * exactly the same 3 channels as that project (see version.h's
- * PWM_NUM_CHANNELS comment for why this isn't generalized to more
- * channels yet, even though this board's pinout wires out 6).
+ * (Timers A/B/C) complementary PWM generation on HRTIM1, wired to the
+ * same U/V/W phases that project drives, plus (2026-09-04) Timers D/E/F
+ * initialized the same way -- dead time enabled, complementary outputs
+ * -- as pin/electrical reservations for this board's 3 additional
+ * HRTIM channels (see docs/pin_mapping_v4.csv). D/E/F are deliberately
+ * NOT phase-locked to the Master timer (see the ResetTrigger comment in
+ * HRTIM1_FullInit()) and NOT started by HRTIM1_PWM_Start(), which still
+ * only takes U/V/W -- per project decision, generalizing to a real
+ * N-channel start/phase-sync scheme is future work, not done here.
  *
  * NOT ported (out of scope, per project decision, 2026-08-31):
  *   - HRTIM1_EmergencyStop() -- fault-response specific; no fault
@@ -49,6 +54,23 @@ extern HRTIM_HandleTypeDef hhrtim1;
 #define HRTIM_IDX_C                 (2U)
 
 void HRTIM1_FullInit(void);
+
+/* Enables the HRTIM1 Master-repetition interrupt (HRTIM1_Master_IRQn),
+ * which drives PFM_CycleBoundaryHandler() (stm32g4xx_it.c's
+ * HRTIM1_Master_IRQHandler()) once per PWM period while the Master
+ * counter is running. Ported from the sibling PFM-STM32G474 project's
+ * HRTIM1_EnableMasterInterrupt() (main.c there) -- same priority
+ * scheme (SysTick=0 highest, HRTIM1_Master=1, USART2=2), same
+ * call-once-at-boot placement, so it's ready and waiting before the
+ * first FIRE rather than being armed reactively at fire time. The ISR
+ * itself is a no-op with respect to actual switching until
+ * HRTIM1_PWM_Start() has been called (by cmd_fire() -> PFM_Restart()).
+ *
+ * Must be called after HAL_Init() has set up the NVIC and after
+ * FixSysTickPriority() (main.c) has raised SysTick off its HAL default
+ * of priority 15 -- see that function's own doc comment for the
+ * priority-inversion window this ordering avoids. */
+void HRTIM1_EnableMasterInterrupt(void);
 
 /* Starts HRTIM outputs, selectively enabling only the phases requested.
  * A phase passed as 0 (disabled) never has its outputs enabled -- its

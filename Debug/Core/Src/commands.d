@@ -29,7 +29,7 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h \
  ../Core/Inc/boot_jump.h ../Core/Inc/uart.h ../Core/Inc/version.h \
- ../Core/Inc/boot_jump.h
+ ../Core/Inc/boot_jump.h ../Core/Inc/pfm.h
 ../Core/Inc/commands.h:
 ../Core/Inc/uart.h:
 ../Core/Inc/main.h:
@@ -65,3 +65,4 @@ Core/Src/commands.o: ../Core/Src/commands.c ../Core/Inc/commands.h \
 ../Core/Inc/uart.h:
 ../Core/Inc/version.h:
 ../Core/Inc/boot_jump.h:
+../Core/Inc/pfm.h:

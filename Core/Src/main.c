@@ -24,6 +24,8 @@
 #include "uart.h"
 #include "cmd_parser.h"
 #include "boot_jump.h"
+#include "hrtim.h"
+#include "pfm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,8 +54,9 @@ UART_HandleTypeDef huart2;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_HRTIM1_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void FixSysTickPriority(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -88,7 +91,16 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* Must run immediately after HAL_Init() -- HAL_InitTick() (called
+     inside HAL_Init()) sets SysTick to its default TICK_INT_PRIORITY
+     (15, the lowest possible), which this overrides. See
+     FixSysTickPriority()'s own doc comment (below) for the full
+     priority-inversion window this closes -- placed here, as early as
+     possible, so nothing between here and HRTIM1_EnableMasterInterrupt()
+     (which sets HRTIM1_Master_IRQn's priority, later in USER CODE 2)
+     can be exposed to it, however briefly. Ported from the sibling
+     PFM-STM32G474 project's main.c, same placement. */
+  FixSysTickPriority();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -100,9 +112,24 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_HRTIM1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  /* Brings the PFM table module to a known-empty, known-stopped state
+     before anything else can touch it (a TABLE:* command over UART, or
+     a FIRE). Does not start HRTIM outputs -- see PFM_Init()'s own
+     comment in pfm.c. */
+  PFM_Init();
   uart_init(&uart2, &huart2);
+
+  /* The HRTIM master-repetition interrupt must be enabled now, at
+     boot, even though outputs are not yet running: PFM_CycleBoundaryHandler()
+     needs to be wired up and ready before the first FIRE, not armed
+     reactively at fire time. The ISR itself is a no-op with respect to
+     actual switching until HRTIM1_PWM_Start() has been called (by
+     cmd_fire() -> PFM_Restart()). Ported from the sibling
+     PFM-STM32G474 project's main.c, same placement/rationale. */
+  HRTIM1_EnableMasterInterrupt();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -127,9 +154,22 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+  /* Copied directly from the sibling PFM-STM32G474 project's
+     SystemClock_Config() (170 MHz HSI/PLL config), not derived via
+     CubeMX's own auto-resolve -- see AGENTS.md / docs/changelog.txt for
+     why: enabling HRTIM1 through the CubeMX GUI on 2026-09-04 triggered
+     its "resolve clock issues" auto-fix, which silently picked its own
+     unrelated 104 MHz PLL config (PLLN=13) instead. hrtim.c's whole
+     timing model -- HRTIM_TIMER_CLK_HZ, the hardcoded Period=1699 for
+     100 kHz, the 17-count/100 ns dead time -- assumes exactly this
+     170 MHz derivation (HSI 16 MHz / PLLM 4 * PLLN 85 / PLLR 2), matching
+     V3's real, hardware-verified config. Voltage scale BOOST and
+     FLASH_LATENCY_8 are both required at this SYSCLK -- don't drop
+     either while "simplifying" this. */
+
   /** Configure the main internal regulator output voltage
   */
-  HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
+  HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -137,7 +177,13 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV4;
+  RCC_OscInitStruct.PLL.PLLN = 85;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -147,15 +193,52 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_8) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief HRTIM1 Initialization Function
+  * @param None
+  * @retval None
+  *
+  * Deliberately NOT auto-generated content -- copied verbatim from the
+  * sibling PFM-STM32G474 project's own MX_HRTIM1_Init(), which itself
+  * was cut down to this one-line delegate after that project hit the
+  * exact same CubeMX-vs-hand-code conflict this project hit on
+  * 2026-09-04 (see AGENTS.md). CubeMX still owns this function's
+  * existence and call site/ordering (HRTIM1 must init before ADC, if
+  * ADC is ever added -- it needs hhrtim1 for trigger config); the
+  * actual peripheral configuration is entirely hand-written in
+  * HRTIM1_FullInit() (hrtim.c) instead, matching V3/hrtim1's dead-time
+  * and Master-sync setup exactly.
+  *
+  * NOT REGEN-SAFE: this line sits outside any USER CODE marker (same
+  * as in the sibling project). If HRTIM1's Mode/Configuration is ever
+  * reopened in CubeMX's Pinout & Configuration tool and "Generate
+  * Code" is run again, this body WILL be overwritten with CubeMX's own
+  * generated calls, and hhrtim1/HAL_HRTIM_MspInit/MspDeInit WILL
+  * collide with hrtim.c again (multiple-definition link errors --
+  * confirmed by hitting this for real, see docs/changelog.txt). Do not
+  * touch HRTIM1's own Mode/Configuration panel in CubeMX again; other
+  * peripherals' pinout can still be edited freely.
+  */
+static void MX_HRTIM1_Init(void)
+{
+  /* USER CODE BEGIN HRTIM1_Init 0 */
+  /* USER CODE END HRTIM1_Init 0 */
+  /* USER CODE BEGIN HRTIM1_Init 1 */
+  /* USER CODE END HRTIM1_Init 1 */
+  HRTIM1_FullInit();
+  /* USER CODE BEGIN HRTIM1_Init 2 */
+  /* USER CODE END HRTIM1_Init 2 */
 }
 
 /**
@@ -171,16 +254,28 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
-  /* huart2.Init.BaudRate below is hand-set to 9600 (project convention,
-     kept consistent with the sibling PFM-STM32G474 firmware and its
-     host-side tooling) -- it lives in CubeMX-generated code, OUTSIDE
-     any USER CODE marker, so a "Generate Code" from the .ioc (which
-     has no explicit baud rate of its own) will silently reset it back
-     to HAL's default (115200). Re-apply 9600 here if that happens.
-     Same situation, same caveat, in the sibling project's main.c. */
+  /* huart2.Init.BaudRate below is hand-set to 115200 -- raised from
+     9600 on 2026-09-04 after a real-hardware experiment (9600 -> clean
+     at 115200 -> garbled/mismatched at 921600, see docs/changelog.txt)
+     specifically to speed up TABLE:STEP uploads (~20s -> ~3.3s for a
+     500-entry table). This is a deliberate WHAM-PFMG474-V4-only
+     divergence from the sibling PFM-STM32G474 project, which still
+     uses 9600 -- do not "fix" this to match V3 without checking
+     docs/changelog.txt first. python/wham_serial_flash.py and
+     python/pfm_table_upload.py's own APP_BAUD constants were updated
+     to match; scpi.py takes baud on its own command line.
+
+     This line lives in CubeMX-generated code, OUTSIDE any USER CODE
+     marker -- a "Generate Code" from the .ioc (which has no explicit
+     baud rate of its own) would reset it back to HAL's default. As it
+     happens HAL's default IS 115200 right now, so a regen wouldn't be
+     visibly wrong today -- but that's a coincidence, not a guarantee:
+     if this value ever needs to change again, re-apply it here
+     explicitly rather than trusting a regen to land on the right
+     number by chance. */
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
+  huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -238,7 +333,31 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+/**
+  * @brief  Raises SysTick's NVIC priority off HAL's default lowest
+  *         value, before anything else can run at an intermediate
+  *         priority.
+  *
+  * Ported verbatim from the sibling PFM-STM32G474 project's main.c.
+  * HAL_InitTick() (called from HAL_Init(), which must run before this)
+  * leaves SysTick_IRQn at TICK_INT_PRIORITY (15, the lowest possible
+  * priority on this Cortex-M4's 4-bit-preempt NVIC grouping). This
+  * project's interrupt priority scheme needs SysTick to be the
+  * *highest*-priority interrupt instead, at 0 -- ahead of both
+  * HRTIM1_Master_IRQn (1, see HRTIM1_EnableMasterInterrupt() in
+  * hrtim.c) and USART2_IRQn (2, see MX_USART2_UART_Init() above) --
+  * so that HAL_Delay()/HAL_GetTick() (both driven by SysTick, and used
+  * by ordinary HAL driver calls such as HAL_UART_Init() during
+  * startup) can never be starved by either of those interrupts firing
+  * back-to-back. Left at the HAL default, a sufficiently busy
+  * HRTIM1_Master_IRQn or USART2_IRQn could indefinitely delay a
+  * HAL_Delay()-based timeout inside some future HAL call, which would
+  * look like an unexplained hang rather than a priority bug.
+  */
+static void FixSysTickPriority(void)
+{
+    HAL_NVIC_SetPriority(SysTick_IRQn, 0U, 0U);
+}
 /* USER CODE END 4 */
 
 /**

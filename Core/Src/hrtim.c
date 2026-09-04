@@ -84,6 +84,22 @@ void HRTIM1_FullInit(void)
     {
         Error_Handler();
     }
+    /* Timers D/E/F: same shared carrier period as A/B/C (all timers on
+       this board's default init run at the same initial ~100 kHz) --
+       see the ResetTrigger comment below for why they are NOT
+       phase-locked to the Master despite sharing this period. */
+    if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, &pTimeBaseCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, &pTimeBaseCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, &pTimeBaseCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
     /* The Master timer's own MPER/MCMP1R/MCMP2R registers are written
        every cycle by HRTIM1_ApplyPfmStep(), exactly like Timer A/B/C's
@@ -156,6 +172,35 @@ void HRTIM1_FullInit(void)
     if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, &pTimerCfg) != HAL_OK)
         Error_Handler();
 
+    /* Timers D/E/F: initialized (dead time, complementary outputs) the
+       same as A/B/C below, but deliberately NOT given a Master-derived
+       ResetTrigger -- the Master timer has exactly 4 compare units
+       (MCMP1R-MCMP4R), enough for at most 5 Master-synchronized,
+       evenly-spaced phases (PER + 4 CMPs), one short of the 6 needed
+       for a true symmetric A-F hexagon. Rather than pick an arbitrary,
+       unverified phase assignment for D/E/F, they're left with
+       ResetTrigger = NONE (free-running from their own period, no
+       defined phase relationship to A/B/C or each other) and
+       UpdateTrigger = NONE (self-updating at their own repetition
+       event via RepetitionUpdate, set above, rather than gated on the
+       Master's). This makes them fully valid standalone complementary
+       PWM channels if started -- just not phase-coordinated with
+       anything else yet. See version.h's PWM_NUM_CHANNELS comment.
+       Also per project decision (2026-09-04): HRTIM1_PWM_Start() is
+       NOT extended to these three timers here -- they are configured,
+       reserved, and pin-muxed, but nothing starts their counters. */
+    pTimerCfg.UpdateTrigger = HRTIM_TIMUPDATETRIGGER_NONE;
+    pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_NONE;
+
+    if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, &pTimerCfg) != HAL_OK)
+        Error_Handler();
+
+    if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, &pTimerCfg) != HAL_OK)
+        Error_Handler();
+
+    if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, &pTimerCfg) != HAL_OK)
+        Error_Handler();
+
     /* Initial compare ~50% */
     pCompareCfg.CompareValue = 850U;
     pCompareCfg.AutoDelayedMode = HRTIM_AUTODELAYEDMODE_REGULAR;
@@ -173,8 +218,21 @@ void HRTIM1_FullInit(void)
     {
         Error_Handler();
     }
+    if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-    /* Master compare values for 120 / 240 degrees at 100 kHz initial period */
+    /* Master compare values for 120 / 240 degrees at 100 kHz initial period --
+       for A/B/C only; D/E/F have no Master-derived phase (see above). */
     pCompareCfg.CompareValue = 567U;
     if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
     {
@@ -206,6 +264,18 @@ void HRTIM1_FullInit(void)
         Error_Handler();
     }
     if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, &pDeadTimeCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, &pDeadTimeCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, &pDeadTimeCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, &pDeadTimeCfg) != HAL_OK)
     {
         Error_Handler();
     }
@@ -247,6 +317,18 @@ void HRTIM1_FullInit(void)
     {
         Error_Handler();
     }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_OUTPUT_TD1, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, HRTIM_OUTPUT_TE1, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, HRTIM_OUTPUT_TF1, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
     /* Output 2: same pOutputCfg as output 1, per the ST reference cited
        above. Do NOT change Polarity, SetSource, or ResetSource here --
@@ -263,6 +345,18 @@ void HRTIM1_FullInit(void)
     {
         Error_Handler();
     }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_OUTPUT_TD2, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, HRTIM_OUTPUT_TE2, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, HRTIM_OUTPUT_TF2, &pOutputCfg) != HAL_OK)
+    {
+        Error_Handler();
+    }
 }
 
 void HAL_HRTIM_MspInit(HRTIM_HandleTypeDef *hhrtim)
@@ -276,6 +370,7 @@ void HAL_HRTIM_MspInit(HRTIM_HandleTypeDef *hhrtim)
         __HAL_RCC_HRTIM1_CLK_ENABLE();
         __HAL_RCC_GPIOA_CLK_ENABLE();
         __HAL_RCC_GPIOB_CLK_ENABLE();
+        __HAL_RCC_GPIOC_CLK_ENABLE();
 
         /* PA8/9 = HRTIM1_CHA1/2 (PHASE_U/UN), PA10/11 = HRTIM1_CHB1/2
            (PHASE_V/VN) -- per docs/pin_mapping_v4.csv, unchanged from
@@ -287,13 +382,41 @@ void HAL_HRTIM_MspInit(HRTIM_HandleTypeDef *hhrtim)
         GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-        /* PB12/13 = HRTIM1_CHC1/2 (PHASE_W/WN) -- likewise unchanged. */
-        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+        /* PB12/13 = HRTIM1_CHC1/2 (PHASE_W/WN), PB14/15 = HRTIM1_CHD1/2
+           (PHASE_X/XN, new on this board) -- both pairs use AF13, same
+           as A/B/C. AF number confirmed against the STM32G474
+           datasheet's Table 13 (Alternate function), column-position
+           verified against PB12's own known-good AF13 entry as a
+           calibration point -- see docs/changelog.txt. */
+        GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
         GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
         HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        /* PC6/7 = HRTIM1_CHF1/2 (PHASE_Z/ZN) -- AF13, same as the rest. */
+        GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
+        HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+        /* PC8/9 = HRTIM1_CHE1/2 (PHASE_Y/YN) -- the ONE exception: this
+           pair maps to AF3, not AF13, on this package. Confirmed via
+           the same datasheet column-position method (verified twice,
+           including cross-checking neighboring I2C3_SCL/SDA and
+           TIM3_CH3/CH4 land on their own textbook-correct AF columns)
+           -- do not "fix" this to match the other five pairs, it is
+           deliberately different and a wrong AF here means the pin
+           silently never connects to HRTIM1 at all. */
+        GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF3_HRTIM1;
+        HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
     }
 }
 
@@ -303,13 +426,75 @@ void HAL_HRTIM_MspDeInit(HRTIM_HandleTypeDef *hhrtim)
     {
         __HAL_RCC_HRTIM1_CLK_DISABLE();
         HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11);
-        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_12 | GPIO_PIN_13);
+        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15);
+        HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9);
     }
+}
+
+/* Waits for one specific Master-timer flag (RESET/MCMP1/MCMP2) to go
+ * true in hardware, then connects exactly one phase's outputs to the
+ * pins -- see HRTIM1_PWM_Start() below for why this exists and why it
+ * must be called with global interrupts already masked. `reforceActive`
+ * re-asserts output1 ACTIVE/output2 INACTIVE (the same SETx1R/RSTx2R
+ * "software trigger" bits HAL_HRTIM_WaveformSetOutputLevel() uses,
+ * written directly for the same reason OENR is below: this call site
+ * owns hhrtim1 exclusively while it runs, so the HAL's lock/state-machine
+ * overhead is pure avoidable latency here) immediately before unmasking
+ * -- needed for Timers B/C, whose ResetTrigger (MASTER_CMP1/CMP2) fires
+ * BEFORE their own natural period rollover, so the external reset does
+ * NOT itself generate a fresh SET event (confirmed against real hardware
+ * data, see the call sites' comments) and the output would otherwise
+ * still reflect whatever state the very first force-ACTIVE call (before
+ * ANY counter started) left it in. NOT needed for Timer A, whose
+ * ResetTrigger (MASTER_PER) coincides with its own natural rollover --
+ * that IS a genuine TIMPER SET-source event, so the output already
+ * transitions correctly on its own.
+ *
+ * Returns 0 on success, 1 if the spin-count ceiling was hit (a real
+ * fault -- the counters aren't actually running -- not a timing corner
+ * case; see HRTIM1_PWM_Start()'s comment on why this can't be a
+ * wall-clock timeout here). */
+static uint8_t HRTIM1_WaitForPhaseAndConnect(uint32_t masterFlag,
+                                             uint32_t timerIdx,
+                                             uint32_t output1,
+                                             uint32_t output2,
+                                             uint32_t outputMask,
+                                             uint8_t reforceActive)
+{
+    uint32_t spins = 0U;
+
+    while (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, masterFlag) == RESET)
+    {
+        spins++;
+        if (spins >= 1000000U)
+        {
+            return 1U;
+        }
+    }
+
+    if (outputMask != 0U)
+    {
+        if (reforceActive != 0U)
+        {
+            hhrtim1.Instance->sTimerxRegs[timerIdx].SETx1R |= HRTIM_SET1R_SST;
+            hhrtim1.Instance->sTimerxRegs[timerIdx].RSTx2R |= HRTIM_RST2R_SRT;
+            (void)output1;   /* named for readability at the call sites;
+                                 the actual register write only needs
+                                 timerIdx, not the HRTIM_OUTPUT_Tx1/2
+                                 constants HAL's own API takes */
+            (void)output2;
+        }
+        hhrtim1.Instance->sCommonRegs.OENR |= outputMask;
+    }
+
+    return 0U;
 }
 
 void HRTIM1_PWM_Start(uint8_t enableU, uint8_t enableV, uint8_t enableW)
 {
-    uint32_t outputMask = 0U;
+    uint32_t outputMaskU = 0U;
+    uint32_t outputMaskV = 0U;
+    uint32_t outputMaskW = 0U;
 
     /* With DeadTimeInsertion enabled, output 2 of each timer is driven
        as the hardware-inverted complement of output 1 -- but there is
@@ -323,32 +508,92 @@ void HRTIM1_PWM_Start(uint8_t enableU, uint8_t enableV, uint8_t enableW)
        the deadtime unit happens to reset into. Only done for phases
        that will actually be enabled below -- harmless either way since
        WaveformSetOutputLevel doesn't itself enable an output, but no
-       reason to touch a phase that's staying disabled. */
+       reason to touch a phase that's staying disabled.
+
+       This is a PREREQUISITE for the counters to start into a defined
+       state, not the last word on what the pins eventually show -- see
+       HRTIM1_WaitForPhaseAndConnect()'s `reforceActive` for why V/W
+       need this repeated later, right as they individually connect. */
     if (enableU != 0U)
     {
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA1, HRTIM_OUTPUTLEVEL_ACTIVE);
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA2, HRTIM_OUTPUTLEVEL_INACTIVE);
-        outputMask |= (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
+        outputMaskU = (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
     }
     if (enableV != 0U)
     {
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB1, HRTIM_OUTPUTLEVEL_ACTIVE);
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB2, HRTIM_OUTPUTLEVEL_INACTIVE);
-        outputMask |= (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+        outputMaskV = (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
     }
     if (enableW != 0U)
     {
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_OUTPUT_TC1, HRTIM_OUTPUTLEVEL_ACTIVE);
         HAL_HRTIM_WaveformSetOutputLevel(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_OUTPUT_TC2, HRTIM_OUTPUTLEVEL_INACTIVE);
-        outputMask |= (HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2);
+        outputMaskW = (HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2);
     }
+
+    /* Cold-start phase-lock settling -- per-phase, individually timed.
+       The force-ACTIVE calls above put U/V/W's main outputs all HIGH at
+       the same instant, with no regard for their intended 120/240 deg
+       stagger -- necessary (per ST's own guidance, cited above) to
+       avoid an undefined complementary-pair state, but it means the
+       pins do NOT yet reflect each timer's real phase relationship.
+       Timer A's ResetTrigger=MASTER_PER coincides with its own natural
+       rollover; Timers B/C (ResetTrigger=MASTER_CMP1/CMP2) only become
+       correctly phase-locked once they've received that first
+       Master-CMPx-triggered reset, at 1/3 and 2/3 of a period.
+
+       Two real-hardware findings (DSLogic captures, 2026-09-04) shaped
+       this function twice:
+         1. Without ANY delay, U/V/W's first-ever output edges all land
+            on the exact same sample -- a garbled ~1-2 cycles before
+            self-correcting. Fixed by not connecting outputs until
+            phase-lock had settled.
+         2. That first fix waited for a single event (one full Master
+            period, via MREP) and connected ALL THREE outputs together
+            -- which stopped the catastrophic collision, but exposed
+            V/W mid-way through whatever their comparators had been
+            doing since their OWN (earlier, still-hidden) MASTER_CMP1/
+            CMP2 reset -- a real duty cycle, just not starting from a
+            clean edge, and not reliably positioned at 120/240 deg
+            either (what looked like a "recovery" edge near there was
+            actually just V/C's own natural TIMPER rollover after their
+            hidden reset, which lands there only by coincidence of the
+            specific duty value -- it will NOT track 120/240 deg for
+            other duty values). Confirmed by direct inspection of a
+            captured .dsl file's raw channel data.
+
+       Fix: wait for and connect each phase SEPARATELY, at ITS OWN
+       reset-trigger event -- V at MASTER_CMP1 (1/3 of a period), W at
+       MASTER_CMP2 (2/3), U at MASTER_PER/MREP (the full period, as
+       before) -- with V/W's output re-forced ACTIVE at that exact
+       moment (see HRTIM1_WaitForPhaseAndConnect()'s `reforceActive`).
+       Each phase's first VISIBLE pulse is therefore a genuine fresh
+       start referenced from ITS OWN phase point: nothing visible on
+       V/W until 120/240 deg after U's first edge, then a clean,
+       correctly-timed, correctly-dutied pulse -- not a snapshot of an
+       already-in-progress cycle. Waiting on hardware flags rather than
+       a computed busy-wait keeps this automatically correct for
+       whatever period is currently loaded, same as before.
+
+       All three flags are masked and cleared of stale state before the
+       counters start, for the same reason as before: HRTIM1_Master_IRQn
+       is armed from boot (or a previous shot) and must not react to any
+       of these events until this function is done setting up the
+       current one -- PFM_CycleBoundaryHandler() firing early would
+       silently advance the table before step 0 was ever visible. */
+    __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
+    __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, (HRTIM_MASTER_IT_MREP |
+                                           HRTIM_MASTER_IT_MCMP1 |
+                                           HRTIM_MASTER_IT_MCMP2));
 
     /* Counters for ALL THREE timers (and Master) always start,
        regardless of which phases are enabled -- a disabled phase's
        timer must stay running and synchronized with the Master via its
        ResetTrigger (MASTER_PER/CMP1/CMP2), or re-enabling it later
        would not be coherent with the other phases. Only the output
-       pins themselves are gated by outputMask below. */
+       pins themselves are gated per-phase below. */
     if (HAL_HRTIM_WaveformCounterStart(&hhrtim1,
                                        HRTIM_TIMERID_MASTER |
                                        HRTIM_TIMERID_TIMER_A |
@@ -358,17 +603,87 @@ void HRTIM1_PWM_Start(uint8_t enableU, uint8_t enableV, uint8_t enableW)
         Error_Handler();
     }
 
-    if (outputMask != 0U)
+    /* Global interrupts masked for the entire settling sequence below
+       (not just one flag/write) -- same reasoning as the single-event
+       version this replaced: SysTick (priority 0, the HIGHEST in this
+       firmware) or USART2 (priority 2) preempting any one of these
+       three latency-sensitive windows would reintroduce exactly the
+       jitter chasing this fix exists to remove. Bounded by each call's
+       own 1,000,000-spin ceiling (HRTIM1_WaitForPhaseAndConnect()) --
+       not a wall-clock timeout, since HAL_GetTick() cannot advance
+       while global interrupts are masked (it's SysTick-driven, and
+       SysTick is masked too). Total worst-case masked duration is still
+       bounded by one Master period (~385 us worst case for a uint16_t
+       `per`), same as before -- three sequential sub-waits within that
+       same one-period budget, not three separate one-period waits. */
+    __disable_irq();
     {
-        if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, outputMask) != HAL_OK)
+        uint8_t timedOut = 0U;
+
+        /* V at 1/3 of a period (MASTER_CMP1) -- fires before W or U. */
+        if (HRTIM1_WaitForPhaseAndConnect(HRTIM_MASTER_FLAG_MCMP1,
+                                          HRTIM_TIMERINDEX_TIMER_B,
+                                          HRTIM_OUTPUT_TB1, HRTIM_OUTPUT_TB2,
+                                          outputMaskV, 1U) != 0U)
         {
+            timedOut = 1U;
+        }
+
+        /* W at 2/3 of a period (MASTER_CMP2). */
+        if (HRTIM1_WaitForPhaseAndConnect(HRTIM_MASTER_FLAG_MCMP2,
+                                          HRTIM_TIMERINDEX_TIMER_C,
+                                          HRTIM_OUTPUT_TC1, HRTIM_OUTPUT_TC2,
+                                          outputMaskW, 1U) != 0U)
+        {
+            timedOut = 1U;
+        }
+
+        /* U at the full period (MASTER_PER/MREP) -- no reforceActive:
+           this IS Timer A's own natural TIMPER SET event, not just an
+           external reset, so the output already transitions correctly
+           without help. */
+        if (HRTIM1_WaitForPhaseAndConnect(HRTIM_MASTER_FLAG_MREP,
+                                          HRTIM_TIMERINDEX_TIMER_A,
+                                          HRTIM_OUTPUT_TA1, HRTIM_OUTPUT_TA2,
+                                          outputMaskU, 0U) != 0U)
+        {
+            timedOut = 1U;
+        }
+
+        /* Not time-critical -- the interrupt just needs to be re-armed
+           before this function returns, not before any of the connects
+           above. Restores the always-armed state
+           HRTIM1_EnableMasterInterrupt() established at boot; also
+           clears whatever flags the three waits above just consumed. */
+        __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, (HRTIM_MASTER_IT_MREP |
+                                               HRTIM_MASTER_IT_MCMP1 |
+                                               HRTIM_MASTER_IT_MCMP2));
+        __HAL_HRTIM_MASTER_ENABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
+
+        if (timedOut != 0U)
+        {
+            __enable_irq();
             Error_Handler();
         }
     }
-    /* If outputMask == 0 (all three phases disabled), no outputs are
-       started at all -- counters run but nothing is ever driven. This
-       is a legal, if unusual, state; the operator explicitly disabled
-       every phase, so no output is exactly correct here. */
+    __enable_irq();
+    /* If outputMaskU/V/W are all 0 (every phase disabled), no outputs
+       are connected at all -- counters run but nothing is ever driven.
+       This is a legal, if unusual, state; the operator explicitly
+       disabled every phase, so no output is exactly correct here. */
+}
+
+void HRTIM1_EnableMasterInterrupt(void)
+{
+    /* Priority scheme, matching the sibling PFM-STM32G474 project
+       exactly (see FixSysTickPriority()'s doc comment in main.c):
+       SysTick=0 (highest), HRTIM1_Master=1, USART2=2 (already set this
+       way in MX_USART2_UART_Init()). Lower number = higher priority on
+       this Cortex-M4's NVIC. */
+    HAL_NVIC_SetPriority(HRTIM1_Master_IRQn, 1U, 0U);
+    HAL_NVIC_EnableIRQ(HRTIM1_Master_IRQn);
+
+    __HAL_HRTIM_MASTER_ENABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
 }
 
 void HRTIM1_PWM_Stop(void)

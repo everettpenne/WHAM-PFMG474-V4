@@ -1,2 +1,8 @@
-../Core/Src/commands.c:23:6:cmd_idn	1
-../Core/Src/commands.c:37:6:cmd_boot	1
+../Core/Src/commands.c:22:13:SendErr	1
+../Core/Src/commands.c:33:6:cmd_idn	1
+../Core/Src/commands.c:47:6:cmd_boot	1
+../Core/Src/commands.c:87:6:cmd_table_begin	1
+../Core/Src/commands.c:97:6:cmd_table_step	9
+../Core/Src/commands.c:153:6:cmd_table_end	1
+../Core/Src/commands.c:164:6:cmd_table_query	1
+../Core/Src/commands.c:194:6:cmd_fire	2

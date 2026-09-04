@@ -1,6 +1,437 @@
 WHAM-PFMG474-V4 Firmware Changelog
 ===================================
 
+2026-09-04  —  Baud rate raised 9600 -> 115200 (real-hardware experiment)
+-----------------------------------------------------------------------------
+  Change:  Requested directly: "can we experiment with increasing the
+        baud rate?" -- motivated by table uploads still taking a few
+        seconds even after the earlier read_until() fix (see the
+        pfm_table_upload.py entry further below), since a meaningful
+        chunk of that time is genuinely wire time at 9600 baud, not
+        avoidable per-call overhead.
+
+        Method: real hardware, not a guess -- edited main.c's
+        huart2.Init.BaudRate, rebuilt, reflashed, and measured a full
+        500-entry TABLE:STEP upload at each step.
+          9600    -> ~20 s   (established baseline, see earlier entry)
+          115200  -> 3.3 s   clean *IDN?, clean upload, OK 500. ~6x.
+          921600  -> FAILED  consistently garbled replies (same length,
+                              wrong content, re-tried 3x -- a real baud
+                              mismatch/reliability failure, not a fluke)
+
+        921600 also broke serial recovery: BOOT needs a working link to
+        even request the ROM bootloader, so a board stuck at a bad baud
+        can't reflash itself back to a good one over serial. Recovered
+        with an ST-Link connected mid-session: `st-info --probe`
+        confirmed detection (STM32G47x_G48x, chipid 0x469), then
+        `st-flash write Debug/WHAM-PFMG474-V4.bin 0x08000000` flashed
+        the 115200 build directly over SWD, completely bypassing the
+        broken serial link. *IDN? at 115200 confirmed recovery
+        immediately after.
+
+        Settled on 115200 (explicit decision, not further tuned) --
+        clearly a large win (~6x) and clearly reliable, without chasing
+        the exact ceiling between 115200 and 921600 (230400/460800
+        untested, left as a real gap if anyone wants to push further
+        later). This is a WHAM-PFMG474-V4-only change -- the sibling
+        PFM-STM32G474 project still uses 9600, and this doesn't imply
+        porting it there.
+
+        Updated everywhere the old convention was written down: main.c
+        (with an updated regen-hazard comment -- HAL's own CubeMX
+        default now happens to BE 115200, so a future .ioc regen
+        wouldn't visibly break this by coincidence, which is not the
+        same as it being safe on principle), python/wham_serial_flash.py
+        (APP_BAUD_DEFAULT + docstring), python/pfm_table_upload.py
+        (APP_BAUD + comment), python/scpi.py (BAUD, flipping which of
+        the file's own two candidate lines was already active),
+        docs/command_reference.md, docs/test_protocol.md,
+        docs/serial_reflash_guide.md, AGENTS.md.
+
+        Verified: full clean rebuild at 115200, zero warnings.
+        Reflashed (via the recovered ST-Link path), *IDN? clean,
+        500-entry table re-uploaded and confirmed (OK 500) at the new
+        baud and measured speed.
+
+2026-09-04  —  Per-phase cold-start settling (real fix, not just jitter reduction)
+-----------------------------------------------------------------------------------
+  Change:  A fresh DSLogic capture of profile 3 (90% -> 10% ramp) exposed
+        that the previous two entries below, while a real improvement,
+        hadn't actually gotten the phase-lock settling right -- they
+        eliminated the catastrophic U/V/W collision, but connected all
+        three outputs together after waiting for a single event (one
+        full Master period). Since V/W's own ResetTrigger (MASTER_CMP1/
+        CMP2) fires much earlier (1/3, 2/3 of a period), by the time all
+        three connected together V/W were already mid-way through
+        whatever their comparators had been doing since that earlier,
+        still-hidden reset -- exposing a stale/in-progress duty cycle,
+        not a clean pulse, and what looked like a "recovery" edge near
+        120/240 deg was actually just each timer's own natural TIMPER
+        rollover after its hidden reset -- which only lands near there
+        by coincidence of that particular duty value, not by design.
+        Confirmed by decoding the .dsl capture's raw per-channel data
+        directly (per-channel bit-packed L-N/0 files inside the archive).
+
+        Real fix: HRTIM1_PWM_Start() now waits for and connects each
+        phase SEPARATELY, at its own reset-trigger event -- new static
+        helper HRTIM1_WaitForPhaseAndConnect(), called three times (V at
+        MASTER_CMP1, W at MASTER_CMP2, U at MASTER_PER/MREP, in that
+        chronological order within one masked critical section). V/W
+        additionally re-force output1 ACTIVE/output2 INACTIVE (direct
+        SETx1R/RSTx2R writes, same reasoning as the direct OENR write)
+        at the exact moment their flag is observed -- necessary because
+        an externally-triggered counter reset does NOT itself generate
+        a fresh SET event (confirmed against the capture data), so
+        without this the output would still reflect whatever the
+        original pre-counter-start force-ACTIVE call left it in, not a
+        clean restart. Timer A needs no such re-force: MASTER_PER
+        coincides with its own natural rollover, a genuine TIMPER
+        SET-source event that already transitions the output correctly
+        on its own. Net effect: nothing visible on V/W until 120/240 deg
+        after U's first edge, then a clean, correctly-timed,
+        correctly-dutied pulse -- not a snapshot of an in-progress cycle.
+
+        Considered and rejected: reverting to relying solely on
+        pre-loading step 0's per/compare values (raised directly, in
+        chat) instead of delaying output connection at all. Doesn't
+        work -- PFM_Restart() already pre-loads those values via
+        PFM_ApplyCurrentStep()/HRTIM1_SoftwareUpdate() BEFORE
+        HRTIM1_PWM_Start() runs, unchanged since before any of these
+        fixes existed, and the original bug happened anyway with that
+        pre-loading already in place. The defect was never stale
+        register content; it's genuine counter-timing settling that
+        only resolves once real time has elapsed, which register values
+        can't substitute for.
+
+        Verified: full clean rebuild, zero warnings (text 34904->35036
+        bytes vs. the masked-interrupt entry below). Reflashed, table
+        re-uploaded, FIRE -> OK twice back to back, board stayed fully
+        responsive to *IDN?/TABLE? throughout.
+
+        CONFIRMED on real hardware the same day: a ~5 ms DSLogic capture
+        spanning nearly the entire shot (499 of 500 periods) shows
+        phase spacing holding rock-solid at ~3300 ns/~6600-6700 ns
+        (target 3333/6667 ns for 120/240 deg) consistently from the
+        cold-start edge all the way to the last period, and U's duty
+        tracking profile 3's 90% -> 10% ramp cleanly throughout (86% ->
+        73% -> 56% -> 41% -> 24% -> exactly 10.0% on the final sampled
+        period) -- confirms PFM_CycleBoundaryHandler() advancing the
+        table stays correctly phase-locked for the whole shot, not just
+        at the exact startup instant. This closes out the cold-start
+        phase-lock investigation that started with the first DSLogic
+        capture earlier today.
+
+2026-09-04  —  Masked interrupts during the settling wait's critical section
+---------------------------------------------------------------------------
+  Change:  Second follow-up to the cold-start phase-lock fix. A fresh
+        DSLogic capture after the loop-tightening entry directly below
+        showed real improvement (first pulse 200 ns -> 600 ns; U/V/W
+        edge-timing error ~700 ns -> ~230-270 ns off target) but a
+        genuine, non-shrinking residual remained -- and it varied run
+        to run (200 ns, then 600 ns), which pointed away from a fixed
+        software-latency floor and toward interrupt preemption:
+        HRTIM1_PWM_Start()'s poll runs with global interrupts enabled,
+        and SysTick (priority 0, the HIGHEST in this firmware -- see
+        FixSysTickPriority()) or USART2 (priority 2, this very FIRE
+        command's own reply path) can legitimately preempt the tight
+        poll loop for a handful of cycles at exactly the wrong moment.
+
+        Fix: wrapped the poll and the OENR write in __disable_irq()/
+        __enable_irq() -- a short, bounded critical section (worst case
+        ~385 us for a uint16_t `per`'s longest representable period,
+        typically ~10 us at 100 kHz). Since HAL_GetTick() can't advance
+        while global interrupts are masked (it's SysTick-driven, and
+        SysTick is masked too), the previous entry's wall-clock timeout
+        doesn't work here -- replaced with a plain 1,000,000-iteration
+        spin-count ceiling, deliberately loose (many milliseconds of
+        real time even pessimistically) rather than tuned, so it can
+        only ever trip on a genuine hang, never in normal operation.
+
+        Verified: full clean rebuild, zero warnings. Reflashed, table
+        re-uploaded, FIRE -> OK repeatedly (fired twice back to back),
+        board stayed fully responsive to *IDN?/TABLE? throughout -- no
+        hang, and no UART data loss from the masked window (a ~10 us,
+        worst-case ~385 us mask is far shorter than the ~1 ms/byte
+        margin at 9600 baud, so an in-flight RX byte just sits in the
+        UART's hardware data register a little longer, unaffected).
+        Re-capturing with DSLogic to confirm the residual actually
+        shrank is the next step, not yet done as of this writing.
+
+2026-09-04  —  Tightened the cold-start settling wait's reaction latency
+--------------------------------------------------------------------------
+  Change:  Follow-up to the cold-start phase-lock fix directly below,
+        after a fresh DSLogic capture confirmed it worked (U/V/W
+        genuinely staggered, ~120/240 deg spacing accurate to a few
+        counts in steady state) but also showed a small residual: the
+        very first visible pulse still read ~200 ns instead of the
+        clean ~1000 ns steady-state width -- software reaction latency
+        between the MREP flag actually going true in hardware and
+        HRTIM1_PWM_Start() acting on it, not a phase-lock problem.
+
+        Two changes to HRTIM1_PWM_Start(), same function, no new
+        approach:
+          - The polling loop's inner spin no longer calls HAL_GetTick()
+            on every iteration -- that's a real function call, added
+            avoidable cycles to the exact latency being chased. The
+            wall-clock timeout (still 5 ms, still Error_Handler() on
+            expiry) is now sampled only every 256 spins; the inner loop
+            itself is just a register read, compare, and branch.
+          - Connecting the outputs on flag-observed now writes OENR
+            directly (hhrtim1.Instance->sCommonRegs.OENR |= outputMask)
+            instead of calling HAL_HRTIM_WaveformOutputStart(), which
+            does the identical single register write wrapped in
+            __HAL_LOCK/State=BUSY/__HAL_UNLOCK bookkeeping this call
+            site doesn't need. Same precedent already used by
+            HRTIM1_SoftwareUpdate()'s direct CR2 write elsewhere in
+            this file. Re-arming HRTIM_MASTER_IT_MREP (needed before
+            this function returns, not before) now happens AFTER the
+            OENR write, not before -- it isn't time-critical, and
+            keeping it out of the way removes two more register
+            round-trips from the critical path.
+
+        Verified: full clean rebuild, zero warnings (text +16 bytes net
+        vs. the previous entry). Reflashed over serial, re-uploaded the
+        table, FIRE -> OK promptly, board stayed responsive to *IDN?
+        afterward -- the tightened spin loop and reordering introduced
+        no hang or regression. Re-capturing with DSLogic to confirm the
+        first-pulse width actually improved is the next step, not yet
+        done as of this writing.
+
+2026-09-04  —  Bugfix: cold-start phase-lock glitch on every FIRE
+------------------------------------------------------------------
+  Change:  Found via a real DSLogic U3Pro32 capture (decoded by hand --
+        no capture-analysis tooling in this repo, just the .dsl
+        archive's raw bit-packed channel data). Symptom: on every
+        `FIRE`, U/V/W's first-ever output edges all landed on the
+        exact same sample -- not staggered 120°/240° apart as
+        intended -- producing ~1-2 garbled cycles (one phase measured
+        holding ON ~7.4x too long; that first "period" reading as low
+        as ~60 kHz) before self-correcting from cycle 2 onward. Matches
+        what the user had independently noticed as "~60 kHz garbage for
+        the first ~2 periods" on a real scope.
+
+        Root cause: HRTIM1_PWM_Start()'s HAL_HRTIM_WaveformSetOutputLevel()
+        calls (needed, per ST's own HAL guidance, to avoid an undefined
+        complementary-pair state when DeadTimeInsertion is enabled)
+        force TA1/TB1/TC1 all ACTIVE at the same instant, with no
+        regard for their intended stagger. Timer A's ResetTrigger
+        (MASTER_PER) happens to coincide with its own natural period
+        rollover, but Timers B/C (ResetTrigger = MASTER_CMP1/CMP2)
+        aren't genuinely phase-locked until they've received their
+        first Master-CMPx-triggered reset -- which hasn't happened yet
+        at the moment the counters first start.
+
+        Fix: HRTIM1_PWM_Start() now starts the counters as before, but
+        delays connecting the outputs to the pins (WaveformOutputStart())
+        until the Master's own MREP (repetition) flag confirms one full
+        period has genuinely elapsed in hardware -- by then every
+        timer has already received its first phase-defining reset, so
+        the first VISIBLE edge is already correctly phase-locked.
+        Waiting on the hardware flag rather than computing a busy-wait
+        from `per`/HRTIM_TIMER_CLK_HZ makes this automatically correct
+        for whatever period is currently loaded -- no hardcoded 100 kHz
+        assumption, so it stays correct if/when variable-frequency
+        tables exist (per user request, 2026-09-04). HRTIM_MASTER_IT_MREP
+        (armed at boot by HRTIM1_EnableMasterInterrupt(), and still
+        armed from any previous shot) is masked for the duration of
+        this wait and any stale flag discarded first -- otherwise
+        PFM_CycleBoundaryHandler() would fire for real during the
+        settling wait and silently advance the table to step 1 before
+        step 0 was ever visible on the pins. Bounded to 5 ms
+        (>12x margin over the ~385 us worst-case period a uint16_t
+        `per` can represent) with an Error_Handler() fallback, matching
+        this file's existing defensive-timeout convention (see
+        HAL_HRTIM_PollForDLLCalibration() in HRTIM1_FullInit()).
+
+        Verified: full clean rebuild (make clean && make all -j4, zero
+        warnings; text grew 88 bytes). Verified on real hardware:
+        reflashed over serial, re-uploaded a 500-entry table, sent
+        FIRE -> OK promptly (no hang from the new bounded poll -- the
+        real risk this change introduced), board stayed responsive to
+        *IDN? immediately after. Re-capturing with DSLogic to confirm
+        the actual edge timing is now clean is the next step, not yet
+        done as of this writing.
+
+2026-09-04  —  pfm_table_upload.py: reverted profiles 4/5's 0%-duty pad
+--------------------------------------------------------------------------
+  Change:  Reverted the leading 0%-duty pad added in the entry directly
+        below, per project decision. Profiles 4 (10% -> 90%) and 5
+        (90% -> 25%) are now plain full-500-period ramps, built the
+        same way as profiles 2/3 (_ramp(), RAMP_STEPS=50 x
+        RAMP_DWELL_PERIODS=10) -- no separate padded code path.
+        PAD_PERIODS/PAD_RAMP_STEPS/PAD_RAMP_DWELL_PERIODS and
+        _padded_ramp() removed as dead code.
+
+        Verified offline (module import) before re-uploading: both
+        profiles land at exactly 500 entries with clean start/end duty
+        (profile 4: 10.01% -> 89.99%; profile 5: 89.99% -> 25.01%), no
+        pad segment. Re-uploaded profile 4 to the board to replace the
+        padded version from the entry below (TABLE:END -> OK 500).
+
+2026-09-04  —  pfm_table_upload.py: profiles 4/5 (padded ramps)
+-----------------------------------------------------------------
+  Change:  Added two more fixed profiles, following a real-hardware
+        DSLogic/scope bring-up session (see the FIRE entry below):
+        PROFILE 4 (10% -> 90% ramp) and PROFILE 5 (90% -> 25% ramp),
+        each preceded by 5 periods held at 0% duty as a clearly-zero
+        baseline before the ramp starts -- useful for unambiguously
+        marking a shot's actual start on a capture. Total entries
+        still exactly 500 (5ms), matching profiles 1-3: the pad is
+        carved out of the existing 500-period budget (5 pad + 495
+        ramp, via new PAD_RAMP_STEPS=45 x PAD_RAMP_DWELL_PERIODS=11),
+        not appended on top of it -- profiles 1-3's own math/behavior
+        is untouched.
+
+        Note: "0% duty" is approximate -- cmp_from_duty()'s existing
+        [2, per-2] clamp (matching hrtim.c's HRTIM1_ClampCompare()
+        margin) floors it to cmp=2, i.e. ~0.12% duty at per=1699, not
+        a literal zero. Close enough to read as "off" on a scope, but
+        worth knowing if reading exact numbers off a capture.
+
+        Verified offline (module import, no serial connection) before
+        touching hardware: both profiles land at exactly 500 entries,
+        pad entries all identical at the cmp=2 floor, ramp endpoints
+        within ~0.02% of the intended targets. Verified on real
+        hardware: profile 4 uploaded and confirmed (TABLE:END -> OK
+        500) over the actual serial link.
+
+2026-09-04  —  Bugfix: pfm_table_upload.py ~25-50x slower than it
+                should have been
+------------------------------------------------------------------
+  Change:  Found while running the first real end-to-end bench pass
+        (flash -> upload -> FIRE) of the FIRE command below.
+        send_and_expect_ok() read replies with a manual
+        `while time.time() < deadline: chunk = ser.read(128)` poll
+        loop against a Serial(..., timeout=1.0) port. pyserial's
+        read(size) keeps trying to fill the *entire* requested size
+        until the port's own timeout elapses, even once a short reply
+        (every firmware reply here is a handful of bytes, e.g.
+        "OK\r\n") has already fully arrived -- so every single
+        TABLE:STEP round-trip was costing close to the full 1 s
+        timeout instead of the real ~20-30 ms wire time at 9600 baud.
+        500 entries were taking 8+ minutes; this was mistakable for
+        "9600 baud is just slow", but the baud rate was never the
+        problem.
+
+        Fix: replaced the poll loop with ser.read_until(b"\n"), which
+        returns the instant the terminator arrives (falling back to
+        the port's timeout only on a genuine no-reply failure, which
+        still needs to time out and raise). No protocol or firmware
+        change. Verified: a real 500-entry upload (profile 1) dropped
+        from 500-1000+ s to 20.2 s measured wall-clock, same successful
+        `TABLE:END -> OK 500` result.
+
+        Considered and deferred (see the FIRE entry below's own
+        real-hardware pass for why 20 s was accepted as fine for now):
+        batching multiple TABLE:STEP entries per line (needs a
+        firmware/protocol change; marginal win once the read-loop bug
+        is fixed, since ~30 s of raw payload at 9600 baud is close to
+        the real floor for 500 entries either way) and pipelining
+        without waiting for each ACK (real risk of silently overrunning
+        uart.c's single-line RX buffer without first checking its
+        buffering model -- not done without that check).
+
+2026-09-04  —  FIRE command + HRTIM master-interrupt wiring, verified
+                end-to-end on real hardware
+-------------------------------------------------------------------------
+  Change:  Closed the gap flagged in the previous entry and in
+        AGENTS.md's "Known gaps": added a FIRE command that actually
+        plays back an uploaded table. Two pieces, both ported from the
+        sibling PFM-STM32G474 project:
+
+          - hrtim.c gained HRTIM1_EnableMasterInterrupt() (enables
+            HRTIM1_Master_IRQn, unmasks HRTIM_MASTER_IT_MREP), called
+            once at boot from main.c -- the ISR is armed and ready
+            before the first FIRE, not enabled reactively at fire
+            time. stm32g4xx_it.c gained HRTIM1_Master_IRQHandler(),
+            which clears the MREP flag and calls
+            PFM_CycleBoundaryHandler() once per PWM period while the
+            Master counter runs -- ported with the state-machine/
+            fault-pin calls stripped out (SM_CycleBoundaryTick(),
+            FaultPins_Poll()), since neither exists in this project.
+
+          - main.c also gained FixSysTickPriority() (ported), called
+            immediately after HAL_Init(), which raises SysTick's NVIC
+            priority off HAL's default lowest value. Matches the
+            sibling project's exact interrupt-priority scheme:
+            SysTick=0 (highest), HRTIM1_Master=1, USART2=2 (USART2 was
+            already at priority 2 here from the original serial-
+            command-architecture port, so this completes a scheme that
+            was already half in place). main.c now also calls
+            PFM_Init() at boot (previously never called anywhere in
+            this project) to bring the table module to a known-empty,
+            known-stopped state before any command can touch it.
+
+        commands.c/commands.h gained cmd_fire() -- wraps PFM_Restart()
+        (resets to step 0, forces a software register update, starts
+        HRTIM1_PWM_Start() for phases A/B/C), registered as FIRE in
+        cmd_parser.c's command_table[]. One guard: rejects with the new
+        ERR 5 ("Table is empty") if PFM_GetEntryCount() == 0 --
+        otherwise an empty-table FIRE would silently blip outputs on
+        and back off at the very first master-repetition interrupt
+        (PFM_CycleBoundaryHandler()'s own defensive empty-table check),
+        with no error ever reaching the operator.
+
+        Deliberately NOT added, per project decision (scope stayed to
+        exactly what was asked): no ARM/state-machine interlock (FIRE
+        always takes effect immediately), no STOP command (playback
+        only stops on its own at table exhaustion), no fault gating.
+        See docs/command_reference.md's FIRE entry.
+
+        Verified via a full Debug/ rebuild (make all -j4, clean) and
+        `nm` confirming HRTIM1_Master_IRQHandler linked as a strong
+        symbol overriding the startup file's weak Default_Handler
+        alias (the vector table entry already existed there --
+        HRTIM1 was never enabled via CubeMX's own IRQ-handler
+        generation for this project, but the STM32G474 startup file
+        lists every peripheral vector regardless of .ioc content).
+        Verified end-to-end on real hardware the same day: flashed over
+        serial (python/wham_serial_flash.py, `*IDN?` replying
+        immediately post-flash, confirming the Go-jump/VTOR fix still
+        holds), uploaded a real 500-entry table
+        (python/pfm_table_upload.py, profile 1), then `FIRE` -> `OK`
+        with no `ERR`. Command-layer round trip confirmed only --
+        no scope was available in this pass, so the actual waveform
+        (dead time, 120/240 deg phase spacing, duty accuracy) per
+        docs/test_protocol.md's T4.5-T4.8 is still an open item, not
+        yet observed on an instrument.
+
+2026-09-04  —  PFM table upload (TABLE:BEGIN/STEP/END/?)
+----------------------------------------------------------
+  Change:  Added a serial command set for uploading a complete PFM
+        shot profile from a host script -- pfm.c gained three minimal,
+        generic primitives (PFM_TableReset()/PFM_AppendStep()/
+        PFM_GetEntryCount(), no construction logic, no validation
+        beyond "does it fit") and commands.c gained the four TABLE:*
+        handlers that drive them over the wire. See pfm.h's "ADDED"
+        header note and docs/command_reference.md for the full
+        protocol.
+
+        Table CONSTRUCTION deliberately stays off-controller, per
+        project decision: python/pfm_table_upload.py is the reference
+        builder, with exactly three fixed profiles for now (constant
+        50% duty; duty ramping 25%->75%; duty ramping 90%->10%; all
+        three at a constant 100 kHz carrier, all three ~5 ms total
+        shot length), selected by editing a PROFILE constant before
+        running -- explicitly not meant to be read as "the design" for
+        how profiles will eventually be specified; that's undecided.
+
+        Verified the math independently of any serial connection:
+        loaded the script as a module and checked all three profiles'
+        entry counts, period consistency, per-phase-always-equal
+        invariant, and start/end duty percentages land where expected
+        (profile 1: 500 entries @ 50.03% constant, matching hrtim.c's
+        own hardcoded init default of 850/1699 exactly; profile 2:
+        25.01%->74.99%; profile 3: 89.99%->10.01% -- all within
+        rounding of the intended targets). Not yet verified against
+        real hardware (no on-host test suite for this firmware -- see
+        AGENTS.md); the actual serial round-trip and PFM_AppendStep()
+        error paths (ERR 2/3/4) still need a bench pass.
+
+        No command exists yet to fire an uploaded table (no ARM/FIRE,
+        no state machine) -- this covers upload and verification
+        (TABLE?) only.
+
 2026-08-31  —  Documentation: AGENTS.md + docs/
 -------------------------------------------------
   Change:  First documentation pass for this project. Added AGENTS.md

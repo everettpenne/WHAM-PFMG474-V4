@@ -4,13 +4,15 @@ wham_serial_flash.py -- one-command serial reflash for WHAM-PFMG474-V4.
 
 Ported from the sibling PFM-STM32G474 project's pfm_serial_flash.py --
 same mechanism, adjusted for this project's build artifact name
-(WHAM-PFMG474-V4.bin). Baud is 9600, same as the sibling project (kept
-consistent project-wide by convention).
+(WHAM-PFMG474-V4.bin). Application baud is 115200 (raised from 9600 on
+2026-09-04 -- see AGENTS.md and docs/changelog.txt; WHAM-PFMG474-V4-only,
+the sibling project still uses 9600). The ROM bootloader's own baud
+(--flash-baud, default 57600) is unrelated and unaffected.
 
 It performs the full remote-friendly firmware update over the ordinary
 USART2 link, with no physical BOOT0 / NRST access required:
 
-  1. Opens the serial port at the application baud (9600 8N1) and sends
+  1. Opens the serial port at the application baud (115200 8N1) and sends
      the firmware's `BOOT` command. The running application acknowledges,
      sets a reset-surviving flag, and resets into the STM32 ROM
      bootloader (see Core/Src/boot_jump.c). No-op if that module was
@@ -58,7 +60,7 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)  # this script lives in python/
 DEFAULT_BIN = os.path.join(PROJECT_DIR, "Debug", "WHAM-PFMG474-V4.bin")
 
 FLASH_BASE_ADDR = "0x08000000"   # application origin (matches the linker script)
-APP_BAUD_DEFAULT = 9600          # firmware command protocol: 9600 8N1
+APP_BAUD_DEFAULT = 115200        # firmware command protocol: 115200 8N1
 FLASH_BAUD_DEFAULT = 57600       # stm32flash <-> ROM bootloader (auto-bauded, 8E1)
 
 BOOT_ACK_TOKEN = b"BOOTLOADER"   # substring expected in the BOOT reply

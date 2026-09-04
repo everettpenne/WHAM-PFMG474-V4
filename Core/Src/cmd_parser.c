@@ -70,6 +70,17 @@ static const command_t command_table[] = {
 #if (BOOT_JUMP_FEATURE_ENABLED != 0)
     { "BOOT",                cmd_boot         },
 #endif
+
+    /* PFM table upload -- see commands.c's own header comment on
+       these four handlers. */
+    { "TABle:BEGin",         cmd_table_begin  },
+    { "TABle:STEP",          cmd_table_step   },
+    { "TABle:END",           cmd_table_end    },
+    { "TABle?",              cmd_table_query  },
+
+    /* Begins PWM output -- see commands.c's own header comment on
+       cmd_fire(). */
+    { "FIRE",                cmd_fire         },
 };
 
 #define NUM_COMMANDS  (sizeof(command_table) / sizeof(command_table[0]))
