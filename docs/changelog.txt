@@ -1,6 +1,40 @@
 WHAM-PFMG474-V4 Firmware Changelog
 ===================================
 
+2026-09-04  —  Documentation: SOP Rev B (TABLE/FIRE procedure)
+------------------------------------------------------------------
+  Change:  docs/sop/wham_pfmg474_v4_sop.tex Rev A (2026-08-31) predated
+        TABLE:*/FIRE entirely and explicitly stated "this firmware
+        currently implements no PWM, HRTIM, or power-stage control" --
+        no longer true. Requested directly: update it to explain the
+        new functionality (one-time pass, not itself an ongoing
+        changelog-style update).
+
+        Added Section 8, "Procedure: Upload and Fire a PFM Table"
+        (build a table with python/pfm_table_upload.py, confirm via
+        TABLE:END/TABLE?, send FIRE, note auto-stop and the ERR 5
+        empty-table guard) with a CAUTION callout matching the
+        severity of what changed: this firmware now drives real HRTIM
+        PWM output the instant FIRE is sent, with no ARM step, state
+        machine, or fault interlock. Section 2 (Scope) rewritten to
+        acknowledge this rather than continue asserting the old "no
+        PWM" claim -- the SOP's prior blanket exclusion of power-stage
+        operation is now backed by an explicit caution instead of a
+        (now false) statement that nothing is being driven. Also
+        picked up the 115200 baud change (Section 7 and the revision
+        table) while in there, since Rev A's "9600" text would
+        otherwise mislead the very next person to follow it.
+
+        Revision table: added Rev B row. References section: added
+        pfm_table_upload.py and test_protocol.md.
+
+        Verified: recompiled to PDF (pdflatex, 2 passes -- all
+        cross-references resolved clean, only benign font-substitution
+        warnings), visually reviewed the rendered output page by page,
+        confirmed the CAUTION box and section numbering render
+        correctly. Build artifacts (.aux/.log/.out) cleaned up,
+        matching how this repo doesn't track those elsewhere.
+
 2026-09-04  —  Baud rate raised 9600 -> 115200 (real-hardware experiment)
 -----------------------------------------------------------------------------
   Change:  Requested directly: "can we experiment with increasing the

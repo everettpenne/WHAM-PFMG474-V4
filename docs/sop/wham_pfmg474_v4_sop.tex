@@ -45,6 +45,11 @@
   \hline
   A & 2026-08-31 & -- & Initial issue: build, bootstrap flash, serial
     reflash. No power-stage procedures yet (Section~\ref{sec:scope}). \\
+  B & 2026-09-04 & -- & Added Section~\ref{sec:table-fire}: uploading a
+    PFM table and firing it -- this firmware now drives real HRTIM PWM
+    output (Section~\ref{sec:scope} updated accordingly). Serial baud
+    raised 9600~$\to$~115200 throughout (Section~\ref{sec:verify} and
+    elsewhere). \\
   \hline
 \end{tabular}
 \end{center}
@@ -59,13 +64,21 @@ handed off.
 \section{Scope}
 \label{sec:scope}
 
-Covers firmware build and flashing only. \textbf{This firmware currently
-implements no PWM, HRTIM, or power-stage control} -- it identifies
-itself over serial and accepts remote firmware updates, nothing more.
-This SOP will need a companion procedure for power-stage bring-up,
-calibration, and safety interlocks once that functionality exists; do
-not treat this document as covering any high-voltage or power-stage
-operation.
+Covers firmware build and flashing (Sections~\ref{sec:build}--\ref{sec:verify})
+and, as of Rev~B, uploading a PWM shot profile and firing it
+(Section~\ref{sec:table-fire}) -- this firmware \textbf{now drives real
+HRTIM PWM output} on six pins (three complementary phase pairs) the
+moment \code{FIRE} is sent. \textbf{This firmware still has no ARM
+precondition, no state machine, and no fault interlock} -- \code{FIRE}
+takes effect immediately and unconditionally whenever it is sent, by
+design (see \code{docs/command\_reference.md}). Treat any gate driver or
+power stage wired to these pins as live for the duration of
+Section~\ref{sec:table-fire}, per your lab's normal HV/gate-driver
+procedure, exactly as if driven by any other PWM source -- this SOP
+provides no closed-loop protection behind it. This document still does
+not cover power-stage bring-up, calibration, or safety-interlock
+procedures beyond that caution; a companion procedure remains needed
+once a state machine/interlock exists in firmware.
 
 \section{Prerequisites}
 
@@ -199,7 +212,8 @@ regression and should be reported, not treated as expected behavior.
 \label{sec:verify}
 
 \begin{enumerate}[label=\arabic*.]
-  \item Open a serial connection to the board at \textbf{9600 8N1}.
+  \item Open a serial connection to the board at \textbf{115200 8N1}
+    (raised from 9600 as of Rev~B -- see \code{docs/changelog.txt}).
   \item Send \code{*IDN?} followed by a line ending (\code{\textbackslash
     r}, \code{\textbackslash n}, or both).
   \item Confirm a reply of the form:
@@ -215,6 +229,59 @@ Acceptance criterion for this SOP: Step 3 above returns a well-formed
 reply with the expected version, on the first query, with no manual
 reset performed since the flash in Section~\ref{sec:build} or
 \ref{sec:serial-flash}.
+
+\section{Procedure: Upload and Fire a PFM Table}
+\label{sec:table-fire}
+
+New in Rev~B. Uploads a complete PWM shot profile (a sequence of
+period/duty entries, one per switching cycle) and plays it back on
+demand. Full protocol detail: \code{docs/command\_reference.md}'s
+\code{TABle:*} and \code{FIRE} entries.
+
+\caution{\code{FIRE} drives real HRTIM PWM output on six pins (three
+complementary phase pairs, $\sim$100\,ns hardware dead time between
+each pair) the instant it is sent. There is no ARM step, no state
+machine, and no fault interlock in this firmware -- \code{FIRE} always
+takes effect immediately, whether the board was idle or a previous shot
+was still running. Treat any gate driver or power stage wired to these
+pins as live before proceeding, per your lab's normal HV/gate-driver
+procedure.}
+
+\begin{enumerate}[label=\arabic*.]
+  \item Complete Sections~\ref{sec:build}--\ref{sec:verify} first --
+    a board must already be running current, verified firmware.
+  \item Table \emph{construction} (what shot profile to build) lives
+    entirely on the host, not in firmware -- see \code{pfm.h}'s own
+    header note for why. \code{python/pfm\_table\_upload.py} is the
+    reference builder: edit its \code{PROFILE} constant (1--5; see the
+    script's own header comment for what each one is) before running:
+\begin{quote}\ttfamily\small\raggedright
+python3 python/pfm\_table\_upload.py \textbackslash\\
+\hspace*{1em}--port /dev/cu.usbserial-XXXXX
+\end{quote}
+  \item Confirm the script reports \code{[done] table uploaded and
+    confirmed} with the expected entry count (\code{TABLE:END -> OK
+    <count>}).
+  \item Optionally confirm independently at any time with \code{TABLE?}
+    over a serial terminal (e.g.\ \code{python/scpi.py}) -- replies
+    \code{OK <count>}, matching the upload.
+  \item With the CAUTION above acknowledged and anything downstream of
+    these six pins confirmed safe to drive, send \code{FIRE}. A prompt
+    \code{OK} confirms the shot started; output stops on its own, at a
+    coherent period boundary, once the table is exhausted -- there is
+    no separate \code{STOP} command and no completion notification.
+  \item Sending \code{FIRE} against an empty table (nothing uploaded
+    yet) is rejected with \code{ERR 5} and drives nothing -- this is
+    the one built-in safeguard, not a substitute for the interlock
+    discussed above.
+\end{enumerate}
+
+Acceptance criterion for this SOP: \code{TABLE:END} reports the exact
+entry count the host script intended to send, and \code{FIRE} returns
+\code{OK} with no \code{ERR}. Confirming the actual output waveform
+(dead time, phase spacing, duty accuracy) is a bench/instrumentation
+task outside this SOP's scope -- see \code{docs/test\_protocol.md}'s T4
+group if that level of verification is needed.
 
 \section{Troubleshooting}
 
@@ -248,10 +315,16 @@ reset performed since the flash in Section~\ref{sec:build} or
 
 \begin{itemize}
   \item \code{AGENTS.md} -- project orientation and current functionality.
-  \item \code{docs/command\_reference.md} -- full serial command protocol.
+  \item \code{docs/command\_reference.md} -- full serial command protocol,
+    including \code{TABle:*} and \code{FIRE} (Section~\ref{sec:table-fire}).
   \item \code{docs/serial\_reflash\_guide.md} -- detailed reflash
     mechanism, including the \code{Go}-jump bug referenced in
     Section~\ref{sec:reset-note}.
+  \item \code{docs/test\_protocol.md} -- bench-level verification,
+    including waveform checks beyond this SOP's acceptance criteria.
+  \item \code{python/pfm\_table\_upload.py} -- reference table builder
+    used in Section~\ref{sec:table-fire}; see its own header comment
+    for what each \code{PROFILE} value builds.
   \item \code{docs/changelog.txt} -- dated development history.
 \end{itemize}
 
